@@ -2,7 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+#         Maintain a primary copy of weights in FP32.
+# For each iteration:
+# Make an FP16 copy of the weights.
+# Forward propagation (FP16 weights and activations).
+# Multiply the resulting loss with the scaling factor S.
+# Backward propagation (FP16 weights, activations, and their gradients).
+# Multiply the weight gradient with 1/S.
+# Complete the weight update (including gradient clipping, etc.).
 class Autocast:
 
     def __init__(self, enabled=True, dtype=torch.float16):
@@ -36,11 +43,24 @@ class Autocast:
             """
 
             # Cast all tensor arguments in args and kwargs
-            ### YOUR CODE HERE
+            new_args = []
+            for i in range(len(args)):
+                if isinstance(args[i], torch.Tensor):
+                    if torch.is_floating_point(args[i]):
+                        new_args.append(args[i].to(target_dtype))
+                    else:
+                        new_args.append(args[i])
+                else:
+                    new_args.append(args[i])
+    
+            for key in kwargs:
+                if isinstance(kwargs[key], torch.Tensor):
+                    if torch.is_floating_point(kwargs[key]):
+                        kwargs[key] = kwargs[key].to(target_dtype)
 
             # Call the original function with potentially casted inputs
-            ### YOUR CODE HERE
-            pass
+            return original_func(*new_args, **kwargs)
+            
 
         return wrapper
 
@@ -60,15 +80,18 @@ class Autocast:
         # Store original functions and apply patches
         for module, func_name in self.DOWNCAST_OPS + self.UPCAST_OPS:
             # Store original function
-            ### YOUR CODE HERE
+            together = (module, func_name)
+            curr_func = getattr(*together)
+            self._original_funcs[together] = curr_func
 
             # Create wrapped version of the function
             # Note that you need different target_dtype for DOWNCAST_OPS and UPCAST_OPS
-            ### YOUR CODE HERE
+            needed_dtype = torch.float32 if together in self.UPCAST_OPS else self.target_dtype
+            new_func = self._create_wrapper(curr_func, needed_dtype)
 
             # Set wrapped function as attribute of the module with the same name as original function
-            ### YOUR CODE HERE
-            pass
+            setattr(*together, new_func)
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
@@ -82,10 +105,11 @@ class Autocast:
             return False
 
         # Restore original functions
-        ### YOUR CODE HERE
+        for key, func in self._original_funcs.items():
+            setattr(*key, func)
         
         # Clear the stored functions for the next use
-        ### YOUR CODE HERE
+        self._original_funcs.clear()
         return False
 
 
@@ -94,12 +118,12 @@ class StaticGradScaler:
         """
         scale: loss scaling coef
         """
-        pass
+        self.scale_coef = scale
     
     def scale(self, loss):
         """Scales the loss"""
-        ### YOUR CODE HERE
-        pass
+        scaled_loss = loss * self.scale_coef
+        return scaled_loss
     
     def step(self, optimizer):
         """
@@ -111,8 +135,30 @@ class StaticGradScaler:
         # Perform optimizer step
         # Skip optimizer step if there is any nan/inf in the gradient
         # Do not forget that torch accumulates gradients
-        ### YOUR CODE HERE
-        pass
+        flag_nan = False
+        for gr_param in optimizer.param_groups:
+            if flag_nan: break
+
+            for param in gr_param['params']:
+                if param.grad is None:
+                    continue
+                else:
+                    if not torch.isfinite(param.grad).all():
+                        flag_nan = True
+                        break
+
+        if not flag_nan:
+            for gr_param in optimizer.param_groups:
+                for param in gr_param['params']:
+                    if param.grad is None:
+                        continue
+                    else:
+                        param.grad /= self.scale_coef
+            optimizer.step()
+    
+        optimizer.zero_grad()
+        
+        
     
     def update(self):
         """Updates scaling coef"""
@@ -128,13 +174,18 @@ class DynamicGradScaler:
         min_scale: minimal allowed scaling coef value
         max_scale: maximal allowed scaling coef value
         """
-        ### YOUR CODE HERE
-        pass
+        self.scale_coef = scale
+        self.factor = factor
+        self.patience = patience
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+        self.steps_without_nan = 0
+        self.flag_nan = False
 
     def scale(self, loss):
         """Scales the loss"""
-        ### YOUR CODE HERE
-        pass
+        scaled_loss = loss * self.scale_coef
+        return scaled_loss
 
     def step(self, optimizer):
         """
@@ -148,13 +199,41 @@ class DynamicGradScaler:
         # Perform optimizer step
         # Skip optimizer step if there is any nan/inf in the gradient
         # Do not forget that torch accumulates gradients
-        ### YOUR CODE HERE
-        pass
+        self.flag_nan = False
+        for gr_param in optimizer.param_groups:
+            if self.flag_nan: break
 
+            for param in gr_param['params']:
+                if param.grad is None:
+                    continue
+                else:
+                    if not torch.isfinite(param.grad).all():
+                        self.flag_nan = True
+                        self.steps_without_nan = 0
+                        self.scale_coef /= self.factor
+                        self.scale_coef = max(self.scale_coef, self.min_scale)
+                        break
+
+        if not self.flag_nan:
+            self.steps_without_nan += 1
+
+            for gr_param in optimizer.param_groups:
+                for param in gr_param['params']:
+                    if param.grad is None:
+                        continue
+                    else:
+                        param.grad /= self.scale_coef
+            optimizer.step()
+    
+        optimizer.zero_grad()
 
     def update(self):
         """Updates scaling coef"""
         # If there was no any nan/inf in the gradient patience steps, increase scaling coef using factor
         # Note that scaling coef should be smaller than max_scale
-        ### YOUR CODE HERE
-        pass
+        if not self.flag_nan:
+            if self.steps_without_nan >= self.patience:
+                self.scale_coef *= self.factor
+                self.steps_without_nan = 0
+
+        self.scale_coef = min(self.scale_coef, self.max_scale)
