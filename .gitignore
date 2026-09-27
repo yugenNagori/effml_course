@@ -1,10 +1,11 @@
-﻿.venv/
+# Local Python environment and caches
+.venv/
 venv/
 env/
+.uv-cache/
 __pycache__/
 *.py[cod]
 *$py.class
-.uv-cache/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -15,3 +16,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+.DS_Store
+
+# Local datasets
+data/
