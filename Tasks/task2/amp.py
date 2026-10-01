@@ -156,7 +156,6 @@ class StaticGradScaler:
                         param.grad /= self.scale_coef
             optimizer.step()
     
-        optimizer.zero_grad()
         
         
     
@@ -225,7 +224,6 @@ class DynamicGradScaler:
                         param.grad /= self.scale_coef
             optimizer.step()
     
-        optimizer.zero_grad()
 
     def update(self):
         """Updates scaling coef"""
