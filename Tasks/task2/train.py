@@ -77,15 +77,21 @@ def get_dataloader(dataloader_type, batch_size, path, k):
     if dataloader_type == 'standard':
         ### YOUR CODE HERE
         # prepare dataloader with StandardDataset and collate_fn
-        pass
+        ds = data_utils.StandardDataset(data_path=path, tokenizer=tokenizer)
+        collate = partial(data_utils.collate_fn, pad_token_id=tokenizer.pad_token_id)
+        dataloader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
     if dataloader_type == 'balanced':
         ### YOUR CODE HERE
         # prepare dataloader with StandardDataset collate_fn and BalancedBatchSampler
-        pass
+        ds = data_utils.StandardDataset(data_path=path, tokenizer=tokenizer)
+        collate = partial(data_utils.collate_fn, pad_token_id=tokenizer.pad_token_id)
+        sampler = data_utils.BalancedBatchSampler(dataset=ds, k=k, batch_size=batch_size)
+        dataloader = DataLoader(ds, collate_fn=collate, batch_sampler=sampler)
     if dataloader_type == 'sequenced':
         ### YOUR CODE HERE
         # prepare SequencedDataset
-        pass
+        ds = data_utils.SequencedDataset(data_path=path, tokenizer=tokenizer, batch_size=batch_size)
+        dataloader = DataLoader(ds, batch_size=None, collate_fn=ds.collate_data)
     return dataloader
 
 
@@ -111,19 +117,27 @@ def train_epoch(
         # Obtain outputs and loss depending on kind. Plain fp16 should run without
         # Autocast; static/dynamic modes should use the custom Autocast.
         # Pass loss_mask to the criterion for sequenced batches.
-        ### YOUR CODE HERE
-
+        
         if kind == 'fp16' or kind == 'fp32':
             # compute grads without scaling
-            ### YOUR CODE HERE
-            pass
+            outputs = model(tokens, attention_mask)
+            loss = criterion(outputs, tokens, tokens_lens, loss_mask)
+            loss.backward()
+            optimizer.step()
         else:
+            autocast = amp.Autocast()
+            with autocast:
+                outputs = model(tokens, attention_mask)
+                loss = criterion(outputs, tokens, tokens_lens, loss_mask)
             # compute grads with scaling
-            ### YOUR CODE HERE
-            pass
+            scaled_loss = scaler.scale(loss)
+            scaled_loss.backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         accuracy = metric(outputs, tokens, tokens_lens, loss_mask=loss_mask)
 
+        # первое замедление, поменять на detach
         pbar.set_description(f"Loss: {round(loss.item(), 4)} " f"Accuracy: {round(accuracy.item() * 100, 4)}")
 
 def parse_args():
@@ -158,12 +172,16 @@ def train():
     scaler = None
     if args.kind == 'static':
         # Initialize StaticGradScaler with args.scale.
-        ### YOUR CODE HERE
-        pass
+        scaler = amp.StaticGradScaler(args.scale)
     elif args.kind == 'dynamic':
         # Initialize DynamicGradScaler with the scale-related CLI arguments.
-        ### YOUR CODE HERE
-        pass
+        scaler = amp.DynamicGradScaler(
+            args.scale, 
+            factor=args.factor, 
+            patience=args.patience, 
+            min_scale=args.min_scale,
+            max_scale=args.max_scale,
+        )
     num_epochs = args.num_epochs
     for epoch in range(0, num_epochs):
         train_epoch(
