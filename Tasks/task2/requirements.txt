@@ -1,5 +1,6 @@
 datasets==2.9.0
 einops==0.7.0
+matplotlib
 torch==2.7.1
 tqdm==4.64.1
 transformers==4.48.2
