@@ -87,7 +87,7 @@ def collate_fn(
     max_len = max(lengths)
     for i in range(len(samples)):
         if len(samples[i]) < max_len:
-            pad_tensor = torch.full((max_len - len(samples[i])), pad_token_id, 
+            pad_tensor = torch.full((max_len - len(samples[i]), ), pad_token_id, 
                                     dtype=samples[i].dtype, device=samples[i].device)
             samples[i] = torch.cat([samples[i], pad_tensor], dim=-1)
 
@@ -246,7 +246,7 @@ class SequencedDataset(IterableDataset):
         ids, mask_intervals, total_len = batch
 
         loss_mask = torch.ones(total_len - 1, dtype=torch.bool)
-        loss_intervals = torch.tensor(mask_intervals[:-1]) - 1
+        loss_intervals = torch.tensor(mask_intervals[:-1], dtype=torch.long) - 1
         loss_mask[loss_intervals] = False
         loss_mask = loss_mask.unsqueeze(0)
 

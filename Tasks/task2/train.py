@@ -12,14 +12,17 @@ from argparse import ArgumentParser
 
 
 from torch.utils.data import DataLoader
+from torch.profiler import profile, ProfilerActivity
 import data_utils
 from positional_encoding import PositionalEncoding
 from functools import partial
 from transformers import AutoTokenizer
+from transformers import logging
 
 import amp
 import utils
 
+logging.set_verbosity_error()
 
 def set_global_seed(seed: int) -> None:
     """
@@ -48,7 +51,12 @@ class GPT2LikeModel(torch.nn.Module):
         x = self.embedding(x)
         x = self.positional_encoding(x)
         x = self.hidden_projector(x)
+        
+        
+        # это чо такое (видимо 2 замедление)
         y = self.hidden_projector2(x)
+        
+        # x.dtype 3
         if attention_mask is None:
             attention_mask = torch.tril(
                 torch.ones((x.size(0), x.size(0)), dtype=torch.bool, device=x.device)
@@ -106,6 +114,76 @@ def get_dataloader(dataloader_type, batch_size, path, k):
     return dataloader, elapsed_time
 
 
+def save_profile(prof):
+    print(prof.key_averages().table(
+        sort_by="self_cuda_time_total", row_limit=20
+    ))
+    prof.export_chrome_trace("profile.json")
+
+
+def train_epoch_profiling(
+    train_loader: DataLoader,
+    model: torch.nn.Module,
+    criterion: torch.nn.modules.loss._Loss,
+    metric: Callable, 
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    kind: str,
+    scaler: None | amp.StaticGradScaler | amp.DynamicGradScaler,
+    experiment_kind: str,
+) -> None:
+    model.train()
+    pbar = tqdm(enumerate(train_loader))
+    
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=torch.profiler.schedule(wait=2, warmup=1, active=7, repeat=1),
+        on_trace_ready=save_profile,
+        record_shapes=True,
+        profile_memory=True,
+    ) as prof:
+        for i, data in pbar:
+            tokens, tokens_lens, attention_mask = data['tokens'].to(device), data['lengthes'], data['attention_mask']
+            loss_mask = data.get('loss_mask')
+            if loss_mask is not None:
+                loss_mask = loss_mask.to(device)
+
+            optimizer.zero_grad(set_to_none=False)
+            # Obtain outputs and loss depending on kind. Plain fp16 should run without
+            # Autocast; static/dynamic modes should use the custom Autocast.
+            # Pass loss_mask to the criterion for sequenced batches.
+            
+            if kind == 'fp16' or kind == 'fp32':
+                # compute grads without scaling
+                outputs = model(tokens, attention_mask)
+                loss = criterion(outputs, tokens, tokens_lens, loss_mask)
+                loss.backward()
+                optimizer.step()
+            else:
+                autocast = amp.Autocast()
+                with autocast:
+                    outputs = model(tokens, attention_mask)
+                    loss = criterion(outputs, tokens, tokens_lens, loss_mask)
+                # compute grads with scaling
+                scaled_loss = scaler.scale(loss)
+                scaled_loss.backward()
+                scaler.step(optimizer)
+                scaler.update()
+
+
+            accuracy = metric(outputs, tokens, tokens_lens, loss_mask=loss_mask)
+
+            # первое замедление, поменять на detach
+            pbar.set_description(f"Loss: {round(loss.item(), 4)} " f"Accuracy: {round(accuracy.item() * 100, 4)}")
+            prof.step()
+            if i + 1 >= 10:
+                break
+    
+    
+    
+
+
+
 def train_epoch(
     train_loader: DataLoader,
     model: torch.nn.Module,
@@ -122,7 +200,6 @@ def train_epoch(
     loss_accum = []
     acc_accum = []
     measurements_grad = []
-    peak_gib = None
     num_steps = None
 
 
@@ -139,7 +216,12 @@ def train_epoch(
         
         if kind == 'fp16' or kind == 'fp32':
             # compute grads without scaling
-            if experiment_kind == 'amp':
+            if experiment_kind == 'profiling':
+                outputs = model(tokens, attention_mask)
+                loss = criterion(outputs, tokens, tokens_lens, loss_mask)
+                loss.backward()
+                optimizer.step()
+            elif experiment_kind == 'amp':
                 start = torch.cuda.Event(enable_timing=True)
                 end = torch.cuda.Event(enable_timing=True)
                 start.record()
@@ -156,7 +238,17 @@ def train_epoch(
                 loss.backward()
                 optimizer.step()
         else:
-            if experiment_kind == 'amp':
+            if experiment_kind == 'profiling':
+                autocast = amp.Autocast()
+                with autocast:
+                    outputs = model(tokens, attention_mask)
+                    loss = criterion(outputs, tokens, tokens_lens, loss_mask)
+                # compute grads with scaling
+                scaled_loss = scaler.scale(loss)
+                scaled_loss.backward()
+                scaler.step(optimizer)
+                scaler.update()
+            elif experiment_kind == 'amp':
                 start = torch.cuda.Event(enable_timing=True)
                 end = torch.cuda.Event(enable_timing=True)
                 autocast = amp.Autocast()
@@ -199,10 +291,11 @@ def train_epoch(
     else:
         return loss_accum, acc_accum, measurements_grad, num_steps + 1
 
+
 def parse_args():
     parser = ArgumentParser(description="Training Acceleration Task")
 
-    parser.add_argument("--exp", choices=['amp', 'loading'], default='amp', help='which type of experiment')
+    parser.add_argument("--exp", choices=['amp', 'loading', 'profiling'], default='amp', help='which type of experiment')
     parser.add_argument("--kind", choices=["fp32", "fp16", "static", "dynamic"], default="fp32", help="Training kind (dtype and scaler)")
     parser.add_argument("--batch_size", type=int, default=32, help='Batch size')
     parser.add_argument("--num_epochs", type=int, default=1, help='Number of epochs')
@@ -249,11 +342,26 @@ def train():
     all_steps = 0
     if args.exp == 'loading':
         torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        
 
-    torch.cuda.synchronize()
-    start = time.perf_counter()
     for epoch in range(0, num_epochs):
-        if args.exp == 'amp':
+        if args.exp == 'profiling':
+            if epoch >= 1: break
+            else:
+                train_epoch_profiling(
+                    train_loader=dataloader, 
+                    model=model, 
+                    criterion=criterion, 
+                    metric=metric,
+                    optimizer=optimizer, 
+                    device=device, 
+                    kind=args.kind, 
+                    scaler=scaler,
+                    experiment_kind=args.exp
+                )
+        elif args.exp == 'amp':
             loss, accuracy, grad_time, num_steps = train_epoch(
                 train_loader=dataloader, 
                 model=model, 
@@ -283,12 +391,15 @@ def train():
                             experiment_kind=args.exp
                         )
             all_steps += num_steps
-    torch.cuda.synchronize()
-    all_train_time = time.perf_counter() - start
-    peak_gib = torch.cuda.max_memory_allocated() / 1024**3
+            
+    if args.exp == 'loading':
+        torch.cuda.synchronize()
+        all_train_time = time.perf_counter() - start
+        peak_gib = torch.cuda.max_memory_allocated() / 1024**3
+        peak_reserved_gib = torch.cuda.max_memory_reserved() / 1024**3
 
     if args.exp == 'amp':
-        with open(args.kind + '.json', 'w', encoding='utf-8') as f:
+        with open('results/' + args.kind + '.json', 'w', encoding='utf-8') as f:
             # loss, accuracy, grad_time, all_steps
             results = {
                 'loss_by_steps': all_loss,
@@ -296,7 +407,7 @@ def train():
                 'grad_time_by_steps': all_grad_time_measure,
                 'all_steps': all_steps
             }
-            json.dump(results, f)
+            json.dump(results, f, indent=2)
             
         fig, axes = plt.subplots(3, 1, figsize=(10, 9), constrained_layout=True)
 
@@ -315,19 +426,20 @@ def train():
         for ax in axes:
             ax.grid(True, alpha=0.3)
 
-        fig.savefig(f"{args.kind}.png", dpi=150)
+        fig.savefig(f"graphics/{args.kind}.png", dpi=150)
         plt.close(fig)
         
-    else:
-        with open(args.dataloader + '.json', 'w', encoding='utf-8') as f:
+    elif args.exp == 'loading':
+        with open('results/' + args.dataloader + '.json', 'w', encoding='utf-8') as f:
             # elapsed_time, peak_gib, all_train_time, all_steps
             results = {
                 'dataloader_time': elapsed_time,
                 'peak_mem_allocation': peak_gib,
+                'peak_mem_reserved': peak_reserved_gib,
                 'all_train_time': all_train_time,
                 'all_steps': all_steps
             }
-            json.dump(results, f)
+            json.dump(results, f, indent=2)
 
 
 if __name__ == '__main__':
