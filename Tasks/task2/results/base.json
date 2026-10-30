@@ -1,7 +1,7 @@
 {
-  "dataloader_time": 0.0022809000220149755,
+  "dataloader_time": 0.0020432001911103725,
   "peak_mem_allocation": 4.736669063568115,
   "peak_mem_reserved": 5.578125,
-  "all_train_time": 38.318950900109485,
+  "all_train_time": 37.9927739999257,
   "all_steps": 181
 }

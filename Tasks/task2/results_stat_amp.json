@@ -6,9 +6,9 @@
     "fp32_accuracy_by_steps_mean": 0.09538709661657256,
     "fp32_accuracy_by_steps_median": 0.10003356635570526,
     "fp32_accuracy_by_steps_std": 0.025138861382503163,
-    "fp32_grad_time_by_steps_mean": 0.3915915106469458,
-    "fp32_grad_time_by_steps_median": 0.39158782958984373,
-    "fp32_grad_time_by_steps_std": 0.037555026598883434,
+    "fp32_grad_time_by_steps_mean": 0.3990603245326451,
+    "fp32_grad_time_by_steps_median": 0.3965193786621094,
+    "fp32_grad_time_by_steps_std": 0.059148386777183835,
     "fp32_all_steps": 91
   },
   "fp16": {
@@ -18,9 +18,9 @@
     "fp16_accuracy_by_steps_mean": 0.0,
     "fp16_accuracy_by_steps_median": 0.0,
     "fp16_accuracy_by_steps_std": 0.0,
-    "fp16_grad_time_by_steps_mean": 0.12814982869074895,
-    "fp16_grad_time_by_steps_median": 0.12580044555664063,
-    "fp16_grad_time_by_steps_std": 0.03170801070599648,
+    "fp16_grad_time_by_steps_mean": 0.12849052303439967,
+    "fp16_grad_time_by_steps_median": 0.12588956451416017,
+    "fp16_grad_time_by_steps_std": 0.03421134161840443,
     "fp16_all_steps": 91
   },
   "static": {
@@ -30,9 +30,9 @@
     "static_accuracy_by_steps_mean": 0.09544490460705544,
     "static_accuracy_by_steps_median": 0.1014913022518158,
     "static_accuracy_by_steps_std": 0.024825635650807372,
-    "static_grad_time_by_steps_mean": 0.13732393361185932,
-    "static_grad_time_by_steps_median": 0.13467791748046876,
-    "static_grad_time_by_steps_std": 0.03221428018563179,
+    "static_grad_time_by_steps_mean": 0.13710079977014564,
+    "static_grad_time_by_steps_median": 0.1340927734375,
+    "static_grad_time_by_steps_std": 0.03769562795789154,
     "static_all_steps": 91
   },
   "dynamic": {
@@ -42,9 +42,9 @@
     "dynamic_accuracy_by_steps_mean": 0.09544129811667397,
     "dynamic_accuracy_by_steps_median": 0.1014913022518158,
     "dynamic_accuracy_by_steps_std": 0.02482179397827183,
-    "dynamic_grad_time_by_steps_mean": 0.13676039790059183,
-    "dynamic_grad_time_by_steps_median": 0.13417984008789063,
-    "dynamic_grad_time_by_steps_std": 0.032203504406132163,
+    "dynamic_grad_time_by_steps_mean": 0.13682687025803786,
+    "dynamic_grad_time_by_steps_median": 0.13391769409179688,
+    "dynamic_grad_time_by_steps_std": 0.03698116152518762,
     "dynamic_all_steps": 91
   }
 }

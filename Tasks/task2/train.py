@@ -9,10 +9,11 @@ from tqdm.auto import tqdm
 from typing import Callable
 
 from argparse import ArgumentParser
+from pathlib import Path
 
 
 from torch.utils.data import DataLoader
-from torch.profiler import profile, ProfilerActivity
+from torch.profiler import profile, ProfilerActivity, record_function
 import data_utils
 from positional_encoding import PositionalEncoding
 from functools import partial
@@ -36,14 +37,17 @@ def set_global_seed(seed: int) -> None:
 
 
 class GPT2LikeModel(torch.nn.Module):
-    def __init__(self, vocab_size, embedding_dim=512, hidden_dim=1020, num_heads=4, max_length=data_utils.MAX_LENGTH):
+    # hidden dim странный, как будто, что то не так с выравниванием
+    def __init__(self, vocab_size, embedding_dim=512, hidden_dim=1024, num_heads=4, max_length=data_utils.MAX_LENGTH):
         super().__init__()
         self.num_heads = num_heads
         self.embedding = torch.nn.Embedding(vocab_size, embedding_dim)
         self.positional_encoding = PositionalEncoding(embedding_dim, max_len=max_length)
         self.hidden_projector = nn.Linear(embedding_dim, hidden_dim)
         self.hidden_projector2 = nn.Linear(hidden_dim, hidden_dim)
-        self.decoder = torch.nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=num_heads)
+        # тут два attention
+        # self.decoder = torch.nn.TransformerDecoderLayer(d_model=hidden_dim, nhead=num_heads)
+        self.decoder = torch.nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads)
         self.output_linear = torch.nn.Linear(hidden_dim, vocab_size)
     
     def forward(self, x, attention_mask):
@@ -54,7 +58,7 @@ class GPT2LikeModel(torch.nn.Module):
         
         
         # это чо такое (видимо 2 замедление)
-        y = self.hidden_projector2(x)
+        # y = self.hidden_projector2(x)
         
         # x.dtype 3
         if attention_mask is None:
@@ -67,9 +71,11 @@ class GPT2LikeModel(torch.nn.Module):
             attention_mask = torch.zeros_like(attention_mask, dtype=torch.float32).masked_fill_(
                 attention_mask.logical_not(), float("-inf")
             )
-        attention_mask = attention_mask.to(x.dtype)
+        with record_function("attention_mask.to(dtype)"):
+            attention_mask = attention_mask.to(x.dtype)
 
-        out = self.decoder(tgt=x, memory=x, tgt_mask=attention_mask, memory_mask=attention_mask)
+        # out = self.decoder(tgt=x, memory=x, tgt_mask=attention_mask, memory_mask=attention_mask)
+        out = self.decoder(src=x, src_mask=attention_mask)
         out = self.output_linear(out)
         return out.transpose(0, 1)
 
@@ -114,11 +120,12 @@ def get_dataloader(dataloader_type, batch_size, path, k):
     return dataloader, elapsed_time
 
 
-def save_profile(prof):
+def save_profile(prof, output_dir=None):
     print(prof.key_averages().table(
         sort_by="self_cuda_time_total", row_limit=20
     ))
-    prof.export_chrome_trace("profile.json")
+    profile_path = output_dir / "profile.json" if output_dir else "profile.json"
+    prof.export_chrome_trace(str(profile_path))
 
 
 def train_epoch_profiling(
@@ -131,6 +138,7 @@ def train_epoch_profiling(
     kind: str,
     scaler: None | amp.StaticGradScaler | amp.DynamicGradScaler,
     experiment_kind: str,
+    output_dir=None,
 ) -> None:
     model.train()
     pbar = tqdm(enumerate(train_loader))
@@ -138,7 +146,7 @@ def train_epoch_profiling(
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         schedule=torch.profiler.schedule(wait=2, warmup=1, active=7, repeat=1),
-        on_trace_ready=save_profile,
+        on_trace_ready=partial(save_profile, output_dir=output_dir),
         record_shapes=True,
         profile_memory=True,
     ) as prof:
@@ -147,8 +155,11 @@ def train_epoch_profiling(
             loss_mask = data.get('loss_mask')
             if loss_mask is not None:
                 loss_mask = loss_mask.to(device)
-
-            optimizer.zero_grad(set_to_none=False)
+            
+            # set to none = True
+            # optimizer.zero_grad(set_to_none=False)
+            optimizer.zero_grad(set_to_none=True)
+            
             # Obtain outputs and loss depending on kind. Plain fp16 should run without
             # Autocast; static/dynamic modes should use the custom Autocast.
             # Pass loss_mask to the criterion for sequenced batches.
@@ -174,7 +185,7 @@ def train_epoch_profiling(
             accuracy = metric(outputs, tokens, tokens_lens, loss_mask=loss_mask)
 
             # первое замедление, поменять на detach
-            pbar.set_description(f"Loss: {round(loss.item(), 4)} " f"Accuracy: {round(accuracy.item() * 100, 4)}")
+            # pbar.set_description(f"Loss: {round(loss.item(), 4)} " f"Accuracy: {round(accuracy.item() * 100, 4)}")
             prof.step()
             if i + 1 >= 10:
                 break
@@ -209,7 +220,9 @@ def train_epoch(
         if loss_mask is not None:
             loss_mask = loss_mask.to(device)
 
-        optimizer.zero_grad(set_to_none=False)
+        # optimizer.zero_grad(set_to_none=False)
+        optimizer.zero_grad(set_to_none=True)
+        
         # Obtain outputs and loss depending on kind. Plain fp16 should run without
         # Autocast; static/dynamic modes should use the custom Autocast.
         # Pass loss_mask to the criterion for sequenced batches.
@@ -285,7 +298,7 @@ def train_epoch(
             acc_accum.append(accuracy_cpu)
 
         # первое замедление, поменять на detach
-        pbar.set_description(f"Loss: {round(loss_cpu, 4)} " f"Accuracy: {round(accuracy_cpu * 100, 4)}")
+        # pbar.set_description(f"Loss: {round(loss_cpu, 4)} " f"Accuracy: {round(accuracy_cpu * 100, 4)}")
     if experiment_kind == 'loading':
         return num_steps + 1
     else:
@@ -308,6 +321,7 @@ def parse_args():
     parser.add_argument("--dataloader", choices=["base", "standard", "balanced", "sequenced"], default="base", help="Dataloader type")
     parser.add_argument("--path", type=str, default='data/validation-00000-of-00001.txt', help='Dataset path')
     parser.add_argument("--k", type=int, default=20, help='k for balanced')
+    parser.add_argument("--output_dir", type=str, default=None)
 
     return parser.parse_args()
 
@@ -315,6 +329,9 @@ def parse_args():
 def train():
     set_global_seed(42)
     args = parse_args()
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda:0")
     dataloader, elapsed_time = get_dataloader(args.dataloader, args.batch_size, args.path, args.k)
     model = get_gpt2_model(dataloader.dataset.tokenizer.vocab_size).to(device)
@@ -359,7 +376,8 @@ def train():
                     device=device, 
                     kind=args.kind, 
                     scaler=scaler,
-                    experiment_kind=args.exp
+                    experiment_kind=args.exp,
+                    output_dir=output_dir,
                 )
         elif args.exp == 'amp':
             loss, accuracy, grad_time, num_steps = train_epoch(
@@ -430,7 +448,8 @@ def train():
         plt.close(fig)
         
     elif args.exp == 'loading':
-        with open('results/' + args.dataloader + '.json', 'w', encoding='utf-8') as f:
+        result_path = output_dir / f'{args.dataloader}.json' if output_dir else Path('results') / f'{args.dataloader}.json'
+        with open(result_path, 'w', encoding='utf-8') as f:
             # elapsed_time, peak_gib, all_train_time, all_steps
             results = {
                 'dataloader_time': elapsed_time,

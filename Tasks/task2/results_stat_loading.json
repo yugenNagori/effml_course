@@ -1,30 +1,30 @@
 {
   "base": {
-    "base_dataloader_time": 0.0022809000220149755,
+    "base_dataloader_time": 0.0020432001911103725,
     "base_peak_mem_allocation": 4.736669063568115,
     "base_peak_mem_reserved": 5.578125,
-    "base_all_train_time": 38.318950900109485,
+    "base_all_train_time": 37.9927739999257,
     "base_all_steps": 181
   },
   "standard": {
-    "standard_dataloader_time": 0.0020973999053239822,
+    "standard_dataloader_time": 0.00205060001462698,
     "standard_peak_mem_allocation": 4.73384952545166,
     "standard_peak_mem_reserved": 21.53515625,
-    "standard_all_train_time": 37.042200200026855,
+    "standard_all_train_time": 38.228996800025925,
     "standard_all_steps": 181
   },
   "balanced": {
-    "balanced_dataloader_time": 0.4036254999227822,
+    "balanced_dataloader_time": 0.4065059998538345,
     "balanced_peak_mem_allocation": 3.9208173751831055,
     "balanced_peak_mem_reserved": 10.876953125,
-    "balanced_all_train_time": 11.958465700037777,
+    "balanced_all_train_time": 12.302594999782741,
     "balanced_all_steps": 193
   },
   "sequenced": {
-    "sequenced_dataloader_time": 0.0022029001265764236,
+    "sequenced_dataloader_time": 0.002189899794757366,
     "sequenced_peak_mem_allocation": 1.2152280807495117,
     "sequenced_peak_mem_reserved": 1.41015625,
-    "sequenced_all_train_time": 13.070456000044942,
+    "sequenced_all_train_time": 13.34549119998701,
     "sequenced_all_steps": 477
   }
 }
